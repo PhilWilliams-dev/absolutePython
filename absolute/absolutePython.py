@@ -12,6 +12,93 @@ class absolutePython:
         self.__apiSecret=apiSecret
         self.__apiHost=apiHost
 
+    def __cdfValue(self,  fieldValue, fieldName, cdfUid='', fieldKey='', fieldType=''):
+        return {"cdfUid" : cdfUid, "fieldKey" : fieldKey, "fieldValue" : fieldValue, "fieldName" : fieldName, "type" : fieldType}
+
+    class cdfData:
+        
+        def __init__(self, deviceUid, esn):
+            self.deviceUid = deviceUid
+            self.esn = esn
+            self.cdfValues = []
+        
+        
+        def get(self, cdfName:str):
+            for cdf in self.cdfValues:
+                if(cdf['fieldName'] == cdfName):
+                    return cdf['fieldValue']
+            return ''
+        
+
+        def set(self, cdfName:str, cdfValue):
+            for cdf in self.cdfValues:
+                if cdf['fieldName'] == cdfName:
+                    if cdf['type'] == 'Date':
+                        #This is a date so we need to check it's in the right format
+                        try:
+                            dateValue = datetime.datetime.strptime(cdfValue, '%Y-%m-%d')
+                        except:
+                            raise Exception("CDF Date Value not in correct format, you need Year-Month-Day")
+                            return False
+                        else:
+                            cdf['fieldValue'] = str(dateValue.month) + '-' + str(dateValue.day) + '-' + str(dateValue.year)
+                            return True
+
+                    elif cdf['type'] == 'Dropdown':
+                        #This is a DropDown so lets deal with that
+                        cdf['fieldValue'] = cdfValue
+                        True
+                    else:
+                        #This is a Boring old Text field
+                        cdf['fieldValue'] = cdfValue
+                        return True
+                
+            newCdf = {'fieldName' : cdfName, 'fieldValue' : cdfValue}
+            self.cdfValues.append(newCdf)
+            return True
+
+
+        
+
+        def available():
+            availableCdfs = []
+            cdfDefs = super().super().__makeApiRequest('/v2/cdf/definitions')
+            for cdfDef in cdfDefs:
+                availableCdfs.append(cdfDef.name)
+            return availableCdfs
+
+    def getDeviceCdf(self, device, SerialNumber = False):
+        if len(device) == 0:
+            raise Exception("No devices were specified")
+
+        if SerialNumber:
+            deviceUid = self.__getDeviceUIDfromSerial(device)
+        else:
+            deviceUid = self.__getDeviceUIDfromESN(device)
+
+        try:
+            
+            response = self.__makeApiRequest('/v2/devices/' + deviceUid +'/cdf')
+
+            cdfs = self.cdfData(response['deviceUid'], response['esn'])
+
+            for cdf in response['cdfValues']:
+                v = self.__cdfValue( cdf['fieldValue'], cdf['fieldName'], cdf['cdfUid'], cdf['fieldKey'], cdf['type'])
+                cdfs.cdfValues.append(v)
+            
+        except Exception as e:
+            print(e)
+        else:
+            return cdfs
+
+    def setDeviceCdf(self, cdfData):
+
+        uid = cdfData.deviceUid
+        uri = 'v2/devices/' + uid + '/cdf'
+        body = absolutePython.__json.dumps(cdfData, sort_keys=False)
+        response = self.__makeApiRequest(uri, '', 'PUT', body)
+        return response
+
     @staticmethod
     def __makeFreezeBody(uidList, passCode, message, emailList, messageName, requestName):
         body = '{"name" : "'+ requestName +'","message" : "'+ message +'","messageName" : "'+ messageName +'","deviceUids" : "","freezeDefinition" : {"deviceFreezeType" : "OnDemand"},"passcodeDefinition" : {"option" : "UserDefined","passcode" : ""},"notificationEmails": ""}'
@@ -40,6 +127,24 @@ class absolutePython:
         return absolutePython.__json.dumps(bodyObject, sort_keys=False)
 
     @staticmethod
+    def __makeReachBody(actionTitle, scriptUid, uidList):
+
+        winOptions = '{"displayMode" : "Hidden", "runPrivileges" : "Administrator", "runWhen" : "UserIsOrIsNotSignedIn"}'
+        body = '{"title" : "", "scriptUid" : "", "deviceUids" : [], "winScriptOption" : {}}'
+
+        bodyObject = absolutePython.__json.loads(body, object_pairs_hook=absolutePython.OrderedDict)
+        winOptionsObject = absolutePython.__json.loads(winOptions, object_pairs_hook=absolutePython.OrderedDict)
+
+        bodyObject['winScriptOption'] = winOptionsObject
+        bodyObject['title'] = actionTitle
+        bodyObject['scriptUid'] = scriptUid
+
+        for id in uidList:
+            bodyObject['deviceUids'].append(id)
+
+        return absolutePython.__json.dumps(bodyObject, sort_keys=False)
+
+    @staticmethod
     def __urlEncode(value):
         #Built in URL encode does not work well with the Absolute API so specific chars aare encoded for the time being
         value = value.replace("$", "%24")
@@ -61,8 +166,7 @@ class absolutePython:
         date_yyyyMMdd = date.strftime("%Y") + date.strftime("%m") + date.strftime("%d")
         date_HHmmss = date.strftime("%H") + date.strftime("%M") + date.strftime("%S")
         xAbsDate = date_yyyyMMdd + "T" + date_HHmmss + "Z"
-        #xAbsDate = "20171122T162253Z"
-
+        
         #Create a canonical request
         canonicalRequest = ""
         canonicalRequest += httpRequestMethod.upper() + "\n"
@@ -100,10 +204,14 @@ class absolutePython:
         headers['Authorization'] = "ABS1-HMAC-SHA-256 Credential=" + credentials + ", SignedHeaders=host;content-type;x-abs-date, Signature=" + signature
 
         #Make Request
-        url = "https://" + apiHost + path + "?" + self.__urlEncode(query)
-        print("URL we are using is: " + url)
+        url = "https://" + apiHost + path
+        if(query):
+            url = url + "?" + self.__urlEncode(query)
+
+        #print("URL we are using is: " + url)
         try:
             if(httpRequestMethod == 'GET'):
+
                 response = self.__requests.get(url, headers=headers)
             elif(httpRequestMethod == 'POST'):
                 response =self. __requests.post(url, data=body, headers=headers)
@@ -137,7 +245,7 @@ class absolutePython:
             elif response.status_code == 204:
                 return "Ok"
             else:
-                return response.status_code
+                raise Exception("Something went wrong, Server returned code " + str(response.status_code))
 
     def __getDevicesByESN(self, esnList:list):
         filter = '$filter='
@@ -160,6 +268,16 @@ class absolutePython:
     def __getDeviceUIDfromSerial(self, serial:str):
         d = self.__getDevicesBySerial([serial])
         return str(d[0]['id'])
+
+    def __getDeviceUIDfromESN(self, esn:str):
+         d = self.__getDevicesByESN([esn])
+         return str(d[0]['id'])
+
+    def convertEsnToUid(self, esn:str):
+        if len(esn) != 20:
+            return "Invalud ESN"
+        else:
+            return self.__getDeviceUIDfromESN(esn)
 
     def getActiveDevices(self, fieldList = []):
         if not isinstance(fieldList, list):
@@ -308,6 +426,48 @@ class absolutePython:
 
         try:
             response = self.__makeApiRequest('/v2/device-unenrollment/unenroll','','POST', body)
+        
+        except Exception as e:
+            print(e)
+        else:
+            return response
+
+    def invokeReachScript(self, deviceList, scriptUid, actionTitle, serialNumbers = False):
+        if len(deviceList) == 0:
+            raise Exception("No devices were specified")
+
+        if not isinstance(deviceList, list):
+            internalDeviceList = str.split(deviceList, ',')
+        else:
+            internalDeviceList = deviceList
+
+        uidList = []
+        if serialNumbers:
+            for i in internalDeviceList:
+                uidList.append(self.__getDeviceUIDfromSerial(i))
+        else:
+            for i in internalDeviceList:
+                uidList.append(self.__getDeviceUIDfromESN(i))
+            
+        
+        body = absolutePython.__makeReachBody(actionTitle, scriptUid, uidList)
+
+        try:
+            response = self.__makeApiRequest('/v2/reachscripts','','POST', body)
+        
+        except Exception as e:
+            print(e)
+        else:
+            return response
+
+    def getReachRequestDetails(self, requestUid, deviceUid):
+        if deviceUid:
+            body = '{"deviceUids" : ["' + deviceUid + '"]}'
+        else:
+            body = ''
+
+        try:
+            response = self.__makeApiRequest('/v2/reachscripts/' + requestUid + '/actions','','POST', body)
         
         except Exception as e:
             print(e)
